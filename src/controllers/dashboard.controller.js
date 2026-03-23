@@ -10,41 +10,44 @@ async function kpis(req, res) {
   const inicio = new Date(anio, mes - 1, 1);
   const fin = new Date(anio, mes, 1);
 
-  const [pesajesMes, recicladoresActivos, balanceMes] = await Promise.all([
+  const [pesajesMes, recicladoresActivos, pesajesMesDetalle] = await Promise.all([
     prisma.pesajeMaterial.aggregate({
-      where: {
-        pesaje: {
-          horaEntrada: { gte: inicio, lt: fin },
-          estado: 'OK',
-        },
-      },
+      where: { pesaje: { horaEntrada: { gte: inicio, lt: fin }, estado: 'OK' } },
       _sum: { pesoNeto: true, rechazo: true },
     }),
     prisma.reciclador.count({ where: { estado: 'Activa' } }),
-    prisma.balanceMes.aggregate({
-      where: { anio, mes },
-      _sum: { vendido: true },
+    prisma.pesajeMaterial.findMany({
+      where: { pesaje: { horaEntrada: { gte: inicio, lt: fin }, estado: 'OK' } },
+      include: {
+        material: {
+          include: {
+            precios: { where: { vigenciaHasta: null }, orderBy: { vigenciaDesde: 'desc' }, take: 1 },
+          },
+        },
+      },
     }),
   ]);
 
-  const aprovechado = Number(pesajesMes._sum.pesoNeto ?? 0);
   const rechazos = Number(pesajesMes._sum.rechazo ?? 0);
-  const vendido = Number(balanceMes._sum.vendido ?? 0);
+  const aprovechado = Number(pesajesMes._sum.pesoNeto ?? 0) - rechazos;
 
-  // Estimar liquidado: kg vendidos × precio promedio ~$674/kg
-  const liquidado = vendido * 674;
+  const liquidado = pesajesMesDetalle.reduce((acc, pm) => {
+    const precio = Number(pm.material.precios[0]?.precio ?? 0);
+    const kgComercializable = Number(pm.pesoNeto ?? 0) - Number(pm.rechazo ?? 0);
+    return acc + (kgComercializable > 0 ? kgComercializable * precio : 0);
+  }, 0);
 
   res.json({
     aprovechado: { valor: aprovechado, unidad: 'kg', delta: '+8%', dir: 'up' },
     recicladoresActivos: { valor: recicladoresActivos, delta: '0', dir: 'up' },
     rechazos: { valor: rechazos, unidad: 'kg', delta: '-3%', dir: 'down' },
-    liquidado: { valor: liquidado, unidad: 'COP', delta: '+12%', dir: 'up' },
+    liquidado: { valor: Math.round(liquidado), unidad: 'COP', delta: '+12%', dir: 'up' },
   });
 }
 
 async function actividadReciente(req, res) {
   const pesajes = await prisma.pesaje.findMany({
-    take: 10,
+    take: 8,
     orderBy: { createdAt: 'desc' },
     include: {
       reciclador: true,

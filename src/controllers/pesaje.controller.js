@@ -57,7 +57,7 @@ async function registroDia(req, res) {
 
   const pesajes = await prisma.pesaje.findMany({
     where: { horaEntrada: { gte: hoy, lt: manana } },
-    orderBy: { horaEntrada: 'desc' },
+    orderBy: { createdAt: 'desc' },
     include: {
       reciclador: { select: { id: true, codigo: true, nombre: true, color: true } },
       ruta: { select: { id: true, numero: true, nombre: true } },

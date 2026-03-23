@@ -22,14 +22,16 @@ async function listar(req, res) {
   if (estado) where.estado = estado;
   if (tipo) where.tipo = tipo;
 
-  const skip = (Number(page) - 1) * Number(limit);
+  const pageNum  = Math.max(1, Number(page)  || 1);
+  const limitNum = Math.max(1, Number(limit) || 50);
+  const skip = (pageNum - 1) * limitNum;
 
   const [total, pqrs] = await Promise.all([
     prisma.pQR.count({ where }),
     prisma.pQR.findMany({
       where,
       skip,
-      take: Number(limit),
+      take: limitNum,
       orderBy: { createdAt: 'desc' },
       include: {
         operador: { select: { id: true, nombre: true } },

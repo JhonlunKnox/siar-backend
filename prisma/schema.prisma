@@ -48,8 +48,9 @@ model Reciclador {
   documento     String?          @unique
   telefono      String?
   email         String?
-  color         String           @default("#4caf7d")
-  estado        EstadoReciclador @default(Activa)
+  color          String           @default("#4caf7d")
+  tipoTransporte String?
+  estado         EstadoReciclador @default(Activa)
   rutaId        Int?
   ruta          Ruta?            @relation(fields: [rutaId], references: [id])
   createdAt     DateTime         @default(now())

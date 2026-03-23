@@ -7,16 +7,21 @@ async function obtenerMes(req, res) {
 
   const registros = await prisma.balanceMes.findMany({
     where: { anio, mes },
-    include: {
-      material: { select: { id: true, nombre: true, codigo: true, icono: true } },
-      ajustes: true,
-    },
-    orderBy: { material: { nombre: 'asc' } },
+    include: { ajustes: true },
+    orderBy: { materialId: 'asc' },
   });
 
+  // Enriquecer con nombre del material
+  const materialIds = [...new Set(registros.map((r) => r.materialId))];
+  const materiales = await prisma.material.findMany({
+    where: { id: { in: materialIds } },
+    select: { id: true, nombre: true, codigo: true, icono: true },
+  });
+  const matMap = Object.fromEntries(materiales.map((m) => [m.id, m]));
+
   const totalIngresado = registros.reduce((acc, r) => acc + Number(r.ingresado), 0);
-  const totalVendido = registros.reduce((acc, r) => acc + Number(r.vendido), 0);
-  const totalRechazos = registros.reduce((acc, r) => acc + Number(r.rechazos), 0);
+  const totalVendido   = registros.reduce((acc, r) => acc + Number(r.vendido), 0);
+  const totalRechazos  = registros.reduce((acc, r) => acc + Number(r.rechazos), 0);
   const balanceOK = Math.abs(totalIngresado - (totalVendido + totalRechazos)) < 0.01;
 
   res.json({
@@ -30,7 +35,7 @@ async function obtenerMes(req, res) {
     },
     detalle: registros.map((r) => ({
       id: r.id,
-      material: r.material,
+      material: matMap[r.materialId] ?? { id: r.materialId, nombre: 'Desconocido' },
       ingresado: Number(r.ingresado),
       vendido: Number(r.vendido),
       rechazos: Number(r.rechazos),
@@ -50,31 +55,28 @@ async function recalcularDesdePesajes(req, res) {
   const inicio = new Date(anio, mes - 1, 1);
   const fin = new Date(anio, mes, 1);
 
-  // Agrupar pesajes por material
   const pesajesMat = await prisma.pesajeMaterial.groupBy({
     by: ['materialId'],
-    where: {
-      pesaje: { horaEntrada: { gte: inicio, lt: fin } },
-    },
+    where: { pesaje: { horaEntrada: { gte: inicio, lt: fin } } },
     _sum: { pesoNeto: true, rechazo: true },
   });
 
-  // Pesajes OK (comercializados)
   const pesajesOK = await prisma.pesajeMaterial.groupBy({
     by: ['materialId'],
-    where: {
-      pesaje: { horaEntrada: { gte: inicio, lt: fin }, estado: 'OK' },
-    },
-    _sum: { pesoNeto: true },
+    where: { pesaje: { horaEntrada: { gte: inicio, lt: fin }, estado: 'OK' } },
+    _sum: { pesoNeto: true, rechazo: true },
   });
 
-  const okMap = Object.fromEntries(pesajesOK.map((p) => [p.materialId, p._sum.pesoNeto ?? 0]));
+  const okMap = Object.fromEntries(pesajesOK.map((p) => [p.materialId, {
+    pesoNeto: Number(p._sum.pesoNeto ?? 0),
+    rechazo:  Number(p._sum.rechazo  ?? 0),
+  }]));
 
   const actualizaciones = [];
   for (const pm of pesajesMat) {
     const ingresado = Number(pm._sum.pesoNeto ?? 0);
-    const rechazos = Number(pm._sum.rechazo ?? 0);
-    const vendido = Number(okMap[pm.materialId] ?? 0);
+    const rechazos  = Number(pm._sum.rechazo ?? 0);
+    const vendido   = (okMap[pm.materialId]?.pesoNeto ?? 0) - (okMap[pm.materialId]?.rechazo ?? 0);
 
     actualizaciones.push(
       prisma.balanceMes.upsert({
@@ -92,7 +94,6 @@ async function recalcularDesdePesajes(req, res) {
 async function ajusteManual(req, res) {
   const { materialId, anio, mes, cantidad, tipo, motivo } = req.body;
 
-  // Asegurar que existe el registro de balance
   let balance = await prisma.balanceMes.findUnique({
     where: { anio_mes_materialId: { anio, mes, materialId } },
   });
@@ -108,16 +109,9 @@ async function ajusteManual(req, res) {
   }
 
   const ajuste = await prisma.balanceAjuste.create({
-    data: {
-      balanceId: balance.id,
-      cantidad,
-      tipo,
-      motivo,
-      operadorId: req.user.sub,
-    },
+    data: { balanceId: balance.id, cantidad, tipo, motivo, operadorId: req.user.sub },
   });
 
-  // Aplicar ajuste en el balance
   const delta = tipo === 'entrada' ? Number(cantidad) : -Number(cantidad);
   await prisma.balanceMes.update({
     where: { id: balance.id },

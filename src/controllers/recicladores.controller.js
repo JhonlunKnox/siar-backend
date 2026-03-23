@@ -62,10 +62,46 @@ async function listar(req, res) {
     }
   }
 
+  // Ingreso económico de la semana actual
+  const inicioSemana = new Date(hoy);
+  inicioSemana.setDate(hoy.getDate() - hoy.getDay());
+  inicioSemana.setHours(0, 0, 0, 0);
+
+  const pesajesSemana = recicladores.length
+    ? await prisma.pesaje.findMany({
+        where: {
+          recicladorId: { in: recicladores.map((r) => r.id) },
+          horaEntrada: { gte: inicioSemana },
+          estado: 'OK',
+        },
+        include: {
+          materiales: {
+            include: {
+              material: {
+                include: {
+                  precios: { where: { vigenciaHasta: null }, orderBy: { vigenciaDesde: 'desc' }, take: 1 },
+                },
+              },
+            },
+          },
+        },
+      })
+    : [];
+
+  const ingresoSemanaMap = {};
+  for (const p of pesajesSemana) {
+    for (const pm of p.materiales) {
+      const precio = Number(pm.material.precios[0]?.precio ?? 0);
+      const kg = Number(pm.pesoNeto ?? 0) - Number(pm.rechazo ?? 0);
+      ingresoSemanaMap[p.recicladorId] = (ingresoSemanaMap[p.recicladorId] ?? 0) + (kg > 0 ? kg * precio : 0);
+    }
+  }
+
   const data = recicladores.map((r) => ({
     ...r,
     kgMes: kgMap[r.id] ?? 0,
     totalPesajes: r._count.pesajes,
+    ingresoSemana: ingresoSemanaMap[r.id] ?? 0,
     _count: undefined,
   }));
 
