@@ -56,8 +56,8 @@ async function actividadReciente(req, res) {
       take: 8,
       orderBy: { createdAt: 'desc' },
       include: {
-        reciclador: true,
-        materiales: { include: { material: true } },
+        reciclador: { select: { nombre: true, codigo: true } },
+        materiales: { include: { material: { select: { nombre: true, icono: true } } } },
       },
     });
 
@@ -89,25 +89,33 @@ async function composicionMaterial(req, res) {
     const inicio = new Date(anio, mes - 1, 1);
     const fin    = new Date(anio, mes, 1);
 
-    const por_material = await prisma.pesajeMaterial.groupBy({
-      by: ['materialId'],
+    // Una sola query con JOIN en lugar de dos queries separadas
+    const composicion_raw = await prisma.pesajeMaterial.findMany({
       where: { pesaje: { horaEntrada: { gte: inicio, lt: fin }, estado: 'OK' } },
-      _sum: { pesoNeto: true },
-      orderBy: { _sum: { pesoNeto: 'desc' } },
+      select: {
+        pesoNeto: true,
+        material: { select: { nombre: true, icono: true } },
+      },
     });
 
-    const total = por_material.reduce((acc, m) => acc + Number(m._sum.pesoNeto ?? 0), 0);
+    // Agrupar en JS
+    const por_material_map = new Map();
+    composicion_raw.forEach((pm) => {
+      const key = pm.material.nombre;
+      if (!por_material_map.has(key)) {
+        por_material_map.set(key, { nombre: pm.material.nombre, icono: pm.material.icono, kg: 0 });
+      }
+      const entry = por_material_map.get(key);
+      entry.kg += Number(pm.pesoNeto ?? 0);
+    });
 
-    const materialesIds = por_material.map((m) => m.materialId);
-    const materiales    = await prisma.material.findMany({ where: { id: { in: materialesIds } } });
-    const matMap        = Object.fromEntries(materiales.map((m) => [m.id, m]));
+    const total = Array.from(por_material_map.values()).reduce((acc, m) => acc + m.kg, 0);
 
-    const composicion = por_material.map((m) => ({
-      materialId:  m.materialId,
-      nombre:      matMap[m.materialId]?.nombre ?? 'Desconocido',
-      icono:       matMap[m.materialId]?.icono  ?? '♻️',
-      kg:          Number(m._sum.pesoNeto ?? 0),
-      porcentaje:  total > 0 ? +((Number(m._sum.pesoNeto ?? 0) / total) * 100).toFixed(1) : 0,
+    const composicion = Array.from(por_material_map.values()).map((m) => ({
+      nombre:      m.nombre,
+      icono:       m.icono ?? '♻️',
+      kg:          m.kg,
+      porcentaje:  total > 0 ? +((m.kg / total) * 100).toFixed(1) : 0,
     }));
 
     res.json({ total, composicion });

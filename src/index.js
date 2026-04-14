@@ -2,6 +2,7 @@ require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
 const morgan = require('morgan');
+const compression = require('compression');
 
 const authRoutes         = require('./routes/auth.routes');
 const dashboardRoutes    = require('./routes/dashboard.routes');
@@ -36,8 +37,17 @@ app.use(cors({
 }));
 
 // ─── Middlewares globales ──────────────────────────────────────────────────────
+app.use(compression());
 app.use(express.json());
 app.use(morgan(process.env.NODE_ENV === 'production' ? 'combined' : 'dev'));
+
+// ─── Cache control para endpoints GET estables ─────────────────────────────────
+const cacheControl = (segundos) => (req, res, next) => {
+  if (req.method === 'GET') {
+    res.set('Cache-Control', `private, max-age=${segundos}`)
+  }
+  next()
+}
 
 // ─── Health check ─────────────────────────────────────────────────────────────
 app.get('/health', (_req, res) => {
@@ -48,13 +58,13 @@ app.get('/health', (_req, res) => {
 app.use('/api/auth',         authRoutes);
 app.use('/api/dashboard',    dashboardRoutes);
 app.use('/api/pesaje',       pesajeRoutes);
-app.use('/api/recicladores', recicladoresRoutes);
-app.use('/api/rutas',        rutasRoutes);
-app.use('/api/materiales',   materialesRoutes);
+app.use('/api/recicladores', cacheControl(30), recicladoresRoutes);
+app.use('/api/rutas',        cacheControl(30), rutasRoutes);
+app.use('/api/materiales',   cacheControl(30), materialesRoutes);
 app.use('/api/balance',      balanceRoutes);
 app.use('/api/sui',          suiRoutes);
 app.use('/api/pqr',          pqrRoutes);
-app.use('/api/vehiculos',    vehiculosRoutes);
+app.use('/api/vehiculos',    cacheControl(30), vehiculosRoutes);
 
 // ─── 404 ──────────────────────────────────────────────────────────────────────
 app.use((_req, res) => {
