@@ -13,6 +13,7 @@ async function main() {
   await prisma.balanceMes.deleteMany();
   await prisma.pesajeMaterial.deleteMany();
   await prisma.pesaje.deleteMany();
+  await prisma.vehiculo.deleteMany();
   await prisma.comprador.deleteMany();
   await prisma.precioMaterial.deleteMany();
   await prisma.material.deleteMany();
@@ -391,6 +392,67 @@ async function main() {
   }
 
   console.log('✅ PQRs creadas');
+
+  // ─── Vehículos ────────────────────────────────────────────────────────────
+  await Promise.all([
+    prisma.vehiculo.create({
+      data: {
+        identificador: 'TRI-042',
+        tipo: 'Camion',
+        color: 'Verde',
+        capacidadKg: 150,
+        estado: 'Activo',
+        fechaRegistro: new Date('2025-01-15'),
+        recicladorId: recicladores[0].id, // José Luis Martínez
+      },
+    }),
+    prisma.vehiculo.create({
+      data: {
+        identificador: 'CAR-078',
+        tipo: 'Carreta',
+        color: 'Azul',
+        capacidadKg: 200,
+        estado: 'Activo',
+        fechaRegistro: new Date('2025-02-03'),
+        recicladorId: recicladores[1].id, // Ana Pérez
+      },
+    }),
+    prisma.vehiculo.create({
+      data: {
+        identificador: 'TRI-015',
+        tipo: 'Camion',
+        color: 'Rojo',
+        capacidadKg: 150,
+        estado: 'En mantenimiento',
+        fechaRegistro: new Date('2025-01-28'),
+        recicladorId: recicladores[2].id, // Carlos Ruiz
+      },
+    }),
+    prisma.vehiculo.create({
+      data: {
+        identificador: 'BIC-091',
+        tipo: 'Bicicleta',
+        color: 'Amarillo',
+        capacidadKg: 80,
+        estado: 'Activo',
+        fechaRegistro: new Date('2025-03-10'),
+        recicladorId: recicladores[3].id, // Laura Torres
+      },
+    }),
+    prisma.vehiculo.create({
+      data: {
+        identificador: 'CAM-064',
+        tipo: 'Camion',
+        color: 'Gris',
+        capacidadKg: 500,
+        estado: 'Activo',
+        fechaRegistro: new Date('2025-03-22'),
+        recicladorId: recicladores[6].id, // Pedro Álvarez
+      },
+    }),
+  ]);
+
+  console.log('✅ Vehículos creados');
 
   console.log('\n🎉 Seed completado exitosamente!');
   console.log('\n📋 Credenciales de acceso:');
