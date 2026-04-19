@@ -9,7 +9,7 @@ async function listar(_req, res) {
     const inicioMes = new Date(hoy.getFullYear(), hoy.getMonth(), 1).toISOString();
 
     const [{ data: rutas, error }, { data: pesajesIds }, { data: pesosMes }] = await Promise.all([
-      supabase.from('rutas').select('id, numero, nombre, descripcion, barrios, estado').order('numero', { ascending: true }),
+      supabase.from('rutas').select('id, numero, nombre, descripcion, barrios, estado, lat, lng').order('numero', { ascending: true }),
       supabase.from('pesajes').select('id, rutaId').gte('horaEntrada', inicioMes).eq('estado', 'OK'),
       supabase
         .from('pesaje_materiales')
