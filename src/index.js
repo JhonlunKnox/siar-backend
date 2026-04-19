@@ -23,6 +23,9 @@ const vehiculosRoutes    = require('./routes/vehiculos.routes');
 
 const app = express();
 
+// Necesario para Render/proxies
+app.set('trust proxy', 1);
+
 // ─── CORS ────────────────────────────────────────────────────────────────────
 const allowedOrigins = process.env.CORS_ORIGIN
   ? process.env.CORS_ORIGIN.split(',').map((o) => o.trim())
