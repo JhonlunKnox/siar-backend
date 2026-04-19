@@ -44,8 +44,10 @@ app.use(compression());
 app.use(express.json());
 app.use(morgan(process.env.NODE_ENV === 'production' ? 'combined' : 'dev'));
 
-const cacheControl = (s) => (req, res, next) => {
-  if (req.method === 'GET') res.set('Cache-Control', `private, max-age=${s}`);
+// No server-side cache headers — let the frontend control caching
+const noCache = (_req, res, next) => {
+  res.set('Cache-Control', 'no-store, no-cache, must-revalidate');
+  res.set('Pragma', 'no-cache');
   next();
 };
 
@@ -54,15 +56,15 @@ app.get('/health', (_req, res) => res.json({ status: 'ok', timestamp: new Date()
 
 // ─── Rutas ───────────────────────────────────────────────────────────────────
 app.use('/api/auth',         authRoutes);
-app.use('/api/dashboard',    dashboardRoutes);
-app.use('/api/pesaje',       pesajeRoutes);
-app.use('/api/recicladores', cacheControl(30), recicladoresRoutes);
-app.use('/api/rutas',        cacheControl(30), rutasRoutes);
-app.use('/api/materiales',   cacheControl(30), materialesRoutes);
+app.use('/api/dashboard',    noCache, dashboardRoutes);
+app.use('/api/pesaje',       noCache, pesajeRoutes);
+app.use('/api/recicladores', noCache, recicladoresRoutes);
+app.use('/api/rutas',        noCache, rutasRoutes);
+app.use('/api/materiales',   noCache, materialesRoutes);
 app.use('/api/balance',      balanceRoutes);
 app.use('/api/sui',          suiRoutes);
 app.use('/api/pqr',          pqrRoutes);
-app.use('/api/vehiculos',    cacheControl(30), vehiculosRoutes);
+app.use('/api/vehiculos',    noCache, vehiculosRoutes);
 
 // ─── 404 ─────────────────────────────────────────────────────────────────────
 app.use((_req, res) => res.status(404).json({ error: 'Ruta no encontrada' }));
