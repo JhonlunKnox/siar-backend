@@ -1,8 +1,11 @@
-const prisma = require('../lib/prisma');
+const supabase = require('../lib/supabase');
 
 function getMesActual() {
   const hoy = new Date();
-  return { anio: hoy.getFullYear(), mes: hoy.getMonth() + 1 };
+  return {
+    inicio: new Date(hoy.getFullYear(), hoy.getMonth(), 1).toISOString(),
+    fin:    new Date(hoy.getFullYear(), hoy.getMonth() + 1, 1).toISOString(),
+  };
 }
 
 async function kpis(req, res) {
@@ -92,7 +95,7 @@ async function kpis(req, res) {
     res.status(500).json({ error: 'Error al obtener KPIs' });
   }
 
-  const total = Array.from(map.values()).reduce((acc, m) => acc + m.kg, 0);
+  const total = Array.from(map.values()).reduce((a, m) => a + m.kg, 0);
   return {
     total,
     composicion: Array.from(map.values()).map((m) => ({
@@ -104,37 +107,44 @@ async function kpis(req, res) {
 
 async function computeTendencia() {
   const hoy   = new Date();
-  const inicio = new Date(hoy);
-  inicio.setDate(hoy.getDate() - 7 * 8);
-  inicio.setHours(0, 0, 0, 0);
+  const inicio = new Date(hoy); inicio.setDate(hoy.getDate() - 7 * 8); inicio.setHours(0, 0, 0, 0);
 
-  const pesajes = await prisma.pesajeMaterial.findMany({
-    where: { pesaje: { horaEntrada: { gte: inicio }, estado: 'OK' } },
-    select: { pesoNeto: true, pesaje: { select: { horaEntrada: true } } },
-  });
+  const { data: pesajes } = await supabase
+    .from('pesaje_materiales')
+    .select('pesoNeto, pesajes!pesajeId(horaEntrada, estado)')
+    .gte('pesajes.horaEntrada', inicio.toISOString())
+    .eq('pesajes.estado', 'OK');
 
   const semanas = Array.from({ length: 8 }, (_, i) => {
-    const fin = new Date(hoy); fin.setDate(hoy.getDate() - i * 7);
-    const ini = new Date(fin); ini.setDate(fin.getDate() - 6); ini.setHours(0, 0, 0, 0);
-    fin.setHours(23, 59, 59, 999);
-    return { label: `S${8 - i}`, kg: 0, inicio: ini, fin,
-             inicioStr: ini.toISOString().slice(0, 10), finStr: fin.toISOString().slice(0, 10) };
+    const finSem = new Date(hoy); finSem.setDate(hoy.getDate() - i * 7);
+    const iniSem = new Date(finSem); iniSem.setDate(finSem.getDate() - 6); iniSem.setHours(0, 0, 0, 0);
+    finSem.setHours(23, 59, 59, 999);
+    return { label: `S${8 - i}`, kg: 0, inicio: iniSem, fin: finSem };
   }).reverse();
 
-  for (const pm of pesajes) {
-    const fecha = new Date(pm.pesaje.horaEntrada);
+  for (const pm of pesajes ?? []) {
+    const fecha = new Date(pm.pesajes?.horaEntrada);
     const sem   = semanas.find((s) => fecha >= s.inicio && fecha <= s.fin);
     if (sem) sem.kg += Number(pm.pesoNeto ?? 0);
   }
 
-  return semanas.map((s) => ({ label: s.label, kg: s.kg, inicio: s.inicioStr, fin: s.finStr }));
+  return semanas.map((s) => ({
+    label: s.label, kg: s.kg,
+    inicio: s.inicio.toISOString().slice(0, 10),
+    fin:    s.fin.toISOString().slice(0, 10),
+  }));
 }
 
-// ─── Handlers individuales (mantienen compatibilidad) ─────────────────────────
+// ─── Handlers ────────────────────────────────────────────────────────────────
 async function kpis(_req, res) {
-  try { res.json(await computeKpis()) }
-  catch (err) { console.error('[dashboard.kpis]', err); res.status(500).json({ error: 'Error al obtener KPIs' }) }
+  try { res.json(await computeKpis()); }
+  catch (err) { console.error('[dashboard.kpis]', err); res.status(500).json({ error: 'Error KPIs' }); }
 }
+<<<<<<< HEAD
+async function actividadReciente(_req, res) {
+  try { res.json(await computeActividad()); }
+  catch (err) { console.error('[dashboard.actividad]', err); res.status(500).json({ error: 'Error actividad' }); }
+=======
 
     // Una sola query con JOIN en lugar de dos queries separadas
     const composicion_raw = await prisma.pesajeMaterial.findMany({
@@ -172,32 +182,29 @@ async function kpis(_req, res) {
     console.error('[dashboard.composicionMaterial]', err);
     res.status(500).json({ error: 'Error al obtener composición de materiales' });
   }
+>>>>>>> aac5922958fce7bdf7f63b6d6e0ff2add250927a
 }
-
 async function composicionMaterial(_req, res) {
-  try { res.json(await computeComposicion()) }
-  catch (err) { console.error('[dashboard.composicionMaterial]', err); res.status(500).json({ error: 'Error al obtener composición' }) }
+  try { res.json(await computeComposicion()); }
+  catch (err) { console.error('[dashboard.composicion]', err); res.status(500).json({ error: 'Error composición' }); }
 }
-
 async function tendenciaSemanal(_req, res) {
-  try { res.json(await computeTendencia()) }
-  catch (err) { console.error('[dashboard.tendenciaSemanal]', err); res.status(500).json({ error: 'Error al obtener tendencia semanal' }) }
+  try { res.json(await computeTendencia()); }
+  catch (err) { console.error('[dashboard.tendencia]', err); res.status(500).json({ error: 'Error tendencia' }); }
 }
-
-// ─── Endpoint combinado: 1 request = todos los datos del dashboard ─────────────
 async function all(_req, res) {
   try {
     const [kpisData, actividad, composicion, tendencia] = await Promise.all([
-      computeKpis(),
-      computeActividad(),
-      computeComposicion(),
-      computeTendencia(),
+      computeKpis(), computeActividad(), computeComposicion(), computeTendencia(),
     ]);
     res.json({ kpis: kpisData, actividad, composicion, tendencia });
   } catch (err) {
     console.error('[dashboard.all]', err);
-    res.status(500).json({ error: 'Error al obtener dashboard' });
+    res.status(500).json({ error: 'Error dashboard' });
   }
 }
 
-module.exports = { kpis, actividadReciente, composicionMaterial, tendenciaSemanal, all, computeKpis, computeActividad, computeComposicion, computeTendencia };
+module.exports = {
+  kpis, actividadReciente, composicionMaterial, tendenciaSemanal, all,
+  computeKpis, computeActividad, computeComposicion, computeTendencia,
+};
