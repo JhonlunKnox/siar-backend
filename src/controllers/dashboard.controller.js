@@ -1,89 +1,111 @@
-const prisma = require('../lib/prisma');
+const supabase = require('../lib/supabase');
 
 function getMesActual() {
   const hoy = new Date();
-  return { anio: hoy.getFullYear(), mes: hoy.getMonth() + 1 };
+  return {
+    inicio: new Date(hoy.getFullYear(), hoy.getMonth(), 1).toISOString(),
+    fin:    new Date(hoy.getFullYear(), hoy.getMonth() + 1, 1).toISOString(),
+  };
 }
 
-// ─── Lógica pura (sin req/res) para reutilizar en /all y warm-up ──────────────
 async function computeKpis() {
-  const { anio, mes } = getMesActual();
-  const inicio = new Date(anio, mes - 1, 1);
-  const fin    = new Date(anio, mes, 1);
+  const { inicio, fin } = getMesActual();
 
-  const [pesajesMes, recicladoresActivos, pesajesMesDetalle] = await Promise.all([
-    prisma.pesajeMaterial.aggregate({
-      where: { pesaje: { horaEntrada: { gte: inicio, lt: fin }, estado: 'OK' } },
-      _sum: { pesoNeto: true, rechazo: true },
-    }),
-    prisma.reciclador.count({ where: { estado: 'Activa' } }),
-    prisma.pesajeMaterial.findMany({
-      where: { pesaje: { horaEntrada: { gte: inicio, lt: fin }, estado: 'OK' } },
-      include: {
-        material: {
-          include: {
-            precios: { where: { vigenciaHasta: null }, orderBy: { vigenciaDesde: 'desc' }, take: 1 },
-          },
-        },
-      },
-    }),
+  const [
+    { data: matMes },
+    { count: recActivos },
+    { data: preciosMes },
+  ] = await Promise.all([
+    // pesaje_materiales JOIN pesajes via pesajeId
+    supabase
+      .from('pesaje_materiales')
+      .select('pesoNeto, rechazo, pesajes!pesajeId(horaEntrada, estado)')
+      .gte('pesajes.horaEntrada', inicio)
+      .lt('pesajes.horaEntrada', fin)
+      .eq('pesajes.estado', 'OK'),
+
+    supabase
+      .from('recicladores')
+      .select('id', { count: 'exact', head: true })
+      .eq('estado', 'Activa'),
+
+    supabase
+      .from('pesaje_materiales')
+      .select(`
+        pesoNeto, rechazo,
+        pesajes!pesajeId(horaEntrada, estado),
+        materiales!materialId(precios_material(precio, vigenciaHasta))
+      `)
+      .gte('pesajes.horaEntrada', inicio)
+      .lt('pesajes.horaEntrada', fin)
+      .eq('pesajes.estado', 'OK'),
   ]);
 
-  const rechazos    = Number(pesajesMes._sum.rechazo  ?? 0);
-  const aprovechado = Number(pesajesMes._sum.pesoNeto ?? 0) - rechazos;
-  const liquidado   = pesajesMesDetalle.reduce((acc, pm) => {
-    const precio = Number(pm.material.precios[0]?.precio ?? 0);
-    const kg     = Number(pm.pesoNeto ?? 0) - Number(pm.rechazo ?? 0);
+  const lista = matMes ?? [];
+  const rechazos    = +lista.reduce((a, r) => a + Number(r.rechazo  ?? 0), 0).toFixed(2);
+  const aprovechado = +(lista.reduce((a, r) => a + Number(r.pesoNeto ?? 0), 0) - rechazos).toFixed(2);
+
+  const liquidado = (preciosMes ?? []).reduce((acc, pm) => {
+    const precioVigente = (pm.materiales?.precios_material ?? [])
+      .filter((p) => !p.vigenciaHasta)
+      .sort((a, b) => new Date(b.vigenciaDesde) - new Date(a.vigenciaDesde))[0];
+    const precio = Number(precioVigente?.precio ?? 0);
+    const kg = Number(pm.pesoNeto ?? 0) - Number(pm.rechazo ?? 0);
     return acc + (kg > 0 ? kg * precio : 0);
   }, 0);
 
   return {
-    aprovechado:        { valor: aprovechado,          unidad: 'kg',  delta: '+8%',  dir: 'up'   },
-    recicladoresActivos:{ valor: recicladoresActivos,  delta: '0',    dir: 'up'                  },
-    rechazos:           { valor: rechazos,             unidad: 'kg',  delta: '-3%',  dir: 'down' },
-    liquidado:          { valor: Math.round(liquidado),unidad: 'COP', delta: '+12%', dir: 'up'   },
+    aprovechado:         { valor: aprovechado,         unidad: 'kg',  delta: '+8%',  dir: 'up'   },
+    recicladoresActivos: { valor: recActivos ?? 0,                    delta: '0',    dir: 'up'   },
+    rechazos:            { valor: rechazos,            unidad: 'kg',  delta: '-3%',  dir: 'down' },
+    liquidado:           { valor: Math.round(liquidado), unidad: 'COP', delta: '+12%', dir: 'up' },
   };
 }
 
 async function computeActividad() {
-  const pesajes = await prisma.pesaje.findMany({
-    take: 8,
-    orderBy: { createdAt: 'desc' },
-    include: {
-      reciclador: { select: { nombre: true, codigo: true } },
-      materiales: { include: { material: { select: { nombre: true, icono: true } } } },
-    },
-  });
+  const { data: pesajes } = await supabase
+    .from('pesajes')
+    .select(`
+      id, horaEntrada, estado,
+      recicladores!recicladorId(nombre, codigo),
+      pesaje_materiales(pesoNeto, materiales!materialId(nombre, icono))
+    `)
+    .order('createdAt', { ascending: false })
+    .limit(8);
 
-  return pesajes.map((p) => {
-    const pesoTotal = p.materiales.reduce((acc, m) => acc + Number(m.pesoNeto), 0);
-    const iniciales = p.reciclador.nombre.split(' ').slice(0, 2).map((n) => n[0]).join('');
+  return (pesajes ?? []).map((p) => {
+    const pesoTotal = (p.pesaje_materiales ?? []).reduce((a, m) => a + Number(m.pesoNeto ?? 0), 0);
+    const nombre    = p.recicladores?.nombre ?? '??';
     return {
-      initials: iniciales, nombre: p.reciclador.nombre, codigo: p.reciclador.codigo,
-      materiales: p.materiales.map((m) => m.material.nombre).join(', '),
-      kg: pesoTotal.toFixed(1), hora: p.horaEntrada, estado: p.estado,
+      initials:   nombre.split(' ').slice(0, 2).map((n) => n[0]).join(''),
+      nombre,
+      codigo:     p.recicladores?.codigo ?? '—',
+      materiales: (p.pesaje_materiales ?? []).map((m) => m.materiales?.nombre ?? '').join(', '),
+      kg:         pesoTotal.toFixed(1),
+      hora:       p.horaEntrada,
+      estado:     p.estado,
     };
   });
 }
 
 async function computeComposicion() {
-  const { anio, mes } = getMesActual();
-  const inicio = new Date(anio, mes - 1, 1);
-  const fin    = new Date(anio, mes, 1);
+  const { inicio, fin } = getMesActual();
 
-  const raw = await prisma.pesajeMaterial.findMany({
-    where: { pesaje: { horaEntrada: { gte: inicio, lt: fin }, estado: 'OK' } },
-    select: { pesoNeto: true, material: { select: { nombre: true, icono: true } } },
-  });
+  const { data: raw } = await supabase
+    .from('pesaje_materiales')
+    .select('pesoNeto, materiales!materialId(nombre, icono), pesajes!pesajeId(horaEntrada, estado)')
+    .gte('pesajes.horaEntrada', inicio)
+    .lt('pesajes.horaEntrada', fin)
+    .eq('pesajes.estado', 'OK');
 
   const map = new Map();
-  for (const pm of raw) {
-    const key = pm.material.nombre;
-    if (!map.has(key)) map.set(key, { nombre: pm.material.nombre, icono: pm.material.icono, kg: 0 });
+  for (const pm of raw ?? []) {
+    const key = pm.materiales?.nombre ?? 'Desconocido';
+    if (!map.has(key)) map.set(key, { nombre: key, icono: pm.materiales?.icono, kg: 0 });
     map.get(key).kg += Number(pm.pesoNeto ?? 0);
   }
 
-  const total = Array.from(map.values()).reduce((acc, m) => acc + m.kg, 0);
+  const total = Array.from(map.values()).reduce((a, m) => a + m.kg, 0);
   return {
     total,
     composicion: Array.from(map.values()).map((m) => ({
@@ -95,67 +117,64 @@ async function computeComposicion() {
 
 async function computeTendencia() {
   const hoy   = new Date();
-  const inicio = new Date(hoy);
-  inicio.setDate(hoy.getDate() - 7 * 8);
-  inicio.setHours(0, 0, 0, 0);
+  const inicio = new Date(hoy); inicio.setDate(hoy.getDate() - 7 * 8); inicio.setHours(0, 0, 0, 0);
 
-  const pesajes = await prisma.pesajeMaterial.findMany({
-    where: { pesaje: { horaEntrada: { gte: inicio }, estado: 'OK' } },
-    select: { pesoNeto: true, pesaje: { select: { horaEntrada: true } } },
-  });
+  const { data: pesajes } = await supabase
+    .from('pesaje_materiales')
+    .select('pesoNeto, pesajes!pesajeId(horaEntrada, estado)')
+    .gte('pesajes.horaEntrada', inicio.toISOString())
+    .eq('pesajes.estado', 'OK');
 
   const semanas = Array.from({ length: 8 }, (_, i) => {
-    const fin = new Date(hoy); fin.setDate(hoy.getDate() - i * 7);
-    const ini = new Date(fin); ini.setDate(fin.getDate() - 6); ini.setHours(0, 0, 0, 0);
-    fin.setHours(23, 59, 59, 999);
-    return { label: `S${8 - i}`, kg: 0, inicio: ini, fin,
-             inicioStr: ini.toISOString().slice(0, 10), finStr: fin.toISOString().slice(0, 10) };
+    const finSem = new Date(hoy); finSem.setDate(hoy.getDate() - i * 7);
+    const iniSem = new Date(finSem); iniSem.setDate(finSem.getDate() - 6); iniSem.setHours(0, 0, 0, 0);
+    finSem.setHours(23, 59, 59, 999);
+    return { label: `S${8 - i}`, kg: 0, inicio: iniSem, fin: finSem };
   }).reverse();
 
-  for (const pm of pesajes) {
-    const fecha = new Date(pm.pesaje.horaEntrada);
+  for (const pm of pesajes ?? []) {
+    const fecha = new Date(pm.pesajes?.horaEntrada);
     const sem   = semanas.find((s) => fecha >= s.inicio && fecha <= s.fin);
     if (sem) sem.kg += Number(pm.pesoNeto ?? 0);
   }
 
-  return semanas.map((s) => ({ label: s.label, kg: s.kg, inicio: s.inicioStr, fin: s.finStr }));
+  return semanas.map((s) => ({
+    label: s.label, kg: s.kg,
+    inicio: s.inicio.toISOString().slice(0, 10),
+    fin:    s.fin.toISOString().slice(0, 10),
+  }));
 }
 
-// ─── Handlers individuales (mantienen compatibilidad) ─────────────────────────
+// ─── Handlers ────────────────────────────────────────────────────────────────
 async function kpis(_req, res) {
-  try { res.json(await computeKpis()) }
-  catch (err) { console.error('[dashboard.kpis]', err); res.status(500).json({ error: 'Error al obtener KPIs' }) }
+  try { res.json(await computeKpis()); }
+  catch (err) { console.error('[dashboard.kpis]', err); res.status(500).json({ error: 'Error KPIs' }); }
 }
-
 async function actividadReciente(_req, res) {
-  try { res.json(await computeActividad()) }
-  catch (err) { console.error('[dashboard.actividadReciente]', err); res.status(500).json({ error: 'Error al obtener actividad reciente' }) }
+  try { res.json(await computeActividad()); }
+  catch (err) { console.error('[dashboard.actividad]', err); res.status(500).json({ error: 'Error actividad' }); }
 }
-
 async function composicionMaterial(_req, res) {
-  try { res.json(await computeComposicion()) }
-  catch (err) { console.error('[dashboard.composicionMaterial]', err); res.status(500).json({ error: 'Error al obtener composición' }) }
+  try { res.json(await computeComposicion()); }
+  catch (err) { console.error('[dashboard.composicion]', err); res.status(500).json({ error: 'Error composición' }); }
 }
-
 async function tendenciaSemanal(_req, res) {
-  try { res.json(await computeTendencia()) }
-  catch (err) { console.error('[dashboard.tendenciaSemanal]', err); res.status(500).json({ error: 'Error al obtener tendencia semanal' }) }
+  try { res.json(await computeTendencia()); }
+  catch (err) { console.error('[dashboard.tendencia]', err); res.status(500).json({ error: 'Error tendencia' }); }
 }
-
-// ─── Endpoint combinado: 1 request = todos los datos del dashboard ─────────────
 async function all(_req, res) {
   try {
     const [kpisData, actividad, composicion, tendencia] = await Promise.all([
-      computeKpis(),
-      computeActividad(),
-      computeComposicion(),
-      computeTendencia(),
+      computeKpis(), computeActividad(), computeComposicion(), computeTendencia(),
     ]);
     res.json({ kpis: kpisData, actividad, composicion, tendencia });
   } catch (err) {
     console.error('[dashboard.all]', err);
-    res.status(500).json({ error: 'Error al obtener dashboard' });
+    res.status(500).json({ error: 'Error dashboard' });
   }
 }
 
-module.exports = { kpis, actividadReciente, composicionMaterial, tendenciaSemanal, all, computeKpis, computeActividad, computeComposicion, computeTendencia };
+module.exports = {
+  kpis, actividadReciente, composicionMaterial, tendenciaSemanal, all,
+  computeKpis, computeActividad, computeComposicion, computeTendencia,
+};
