@@ -5,82 +5,91 @@ function getMesActual() {
   return { anio: hoy.getFullYear(), mes: hoy.getMonth() + 1 };
 }
 
-// ─── Lógica pura (sin req/res) para reutilizar en /all y warm-up ──────────────
-async function computeKpis() {
-  const { anio, mes } = getMesActual();
-  const inicio = new Date(anio, mes - 1, 1);
-  const fin    = new Date(anio, mes, 1);
+async function kpis(req, res) {
+  try {
+    const { anio, mes } = getMesActual();
+    const inicio    = new Date(anio, mes - 1, 1);
+    const fin       = new Date(anio, mes,     1);
+    const inicioAnt = new Date(anio, mes - 2, 1); // JS maneja wrap automático (ej: enero → diciembre año anterior)
+    const finAnt    = new Date(anio, mes - 1, 1); // coincide con inicio del mes actual
 
-  const [pesajesMes, recicladoresActivos, pesajesMesDetalle] = await Promise.all([
-    prisma.pesajeMaterial.aggregate({
-      where: { pesaje: { horaEntrada: { gte: inicio, lt: fin }, estado: 'OK' } },
-      _sum: { pesoNeto: true, rechazo: true },
-    }),
-    prisma.reciclador.count({ where: { estado: 'Activa' } }),
-    prisma.pesajeMaterial.findMany({
-      where: { pesaje: { horaEntrada: { gte: inicio, lt: fin }, estado: 'OK' } },
-      include: {
-        material: {
-          include: {
-            precios: { where: { vigenciaHasta: null }, orderBy: { vigenciaDesde: 'desc' }, take: 1 },
-          },
+    const includeDetalle = {
+      material: {
+        include: {
+          precios: { where: { vigenciaHasta: null }, orderBy: { vigenciaDesde: 'desc' }, take: 1 },
         },
       },
-    }),
-  ]);
-
-  const rechazos    = Number(pesajesMes._sum.rechazo  ?? 0);
-  const aprovechado = Number(pesajesMes._sum.pesoNeto ?? 0) - rechazos;
-  const liquidado   = pesajesMesDetalle.reduce((acc, pm) => {
-    const precio = Number(pm.material.precios[0]?.precio ?? 0);
-    const kg     = Number(pm.pesoNeto ?? 0) - Number(pm.rechazo ?? 0);
-    return acc + (kg > 0 ? kg * precio : 0);
-  }, 0);
-
-  return {
-    aprovechado:        { valor: aprovechado,          unidad: 'kg',  delta: '+8%',  dir: 'up'   },
-    recicladoresActivos:{ valor: recicladoresActivos,  delta: '0',    dir: 'up'                  },
-    rechazos:           { valor: rechazos,             unidad: 'kg',  delta: '-3%',  dir: 'down' },
-    liquidado:          { valor: Math.round(liquidado),unidad: 'COP', delta: '+12%', dir: 'up'   },
-  };
-}
-
-async function computeActividad() {
-  const pesajes = await prisma.pesaje.findMany({
-    take: 8,
-    orderBy: { createdAt: 'desc' },
-    include: {
-      reciclador: { select: { nombre: true, codigo: true } },
-      materiales: { include: { material: { select: { nombre: true, icono: true } } } },
-    },
-  });
-
-  return pesajes.map((p) => {
-    const pesoTotal = p.materiales.reduce((acc, m) => acc + Number(m.pesoNeto), 0);
-    const iniciales = p.reciclador.nombre.split(' ').slice(0, 2).map((n) => n[0]).join('');
-    return {
-      initials: iniciales, nombre: p.reciclador.nombre, codigo: p.reciclador.codigo,
-      materiales: p.materiales.map((m) => m.material.nombre).join(', '),
-      kg: pesoTotal.toFixed(1), hora: p.horaEntrada, estado: p.estado,
     };
-  });
-}
 
-async function computeComposicion() {
-  const { anio, mes } = getMesActual();
-  const inicio = new Date(anio, mes - 1, 1);
-  const fin    = new Date(anio, mes, 1);
+    const [
+      [pesajesMes,    recicladoresActivos, pesajesMesDetalle],
+      [pesajesMesAnt, recicladoresAnt,     pesajesMesDetalleAnt],
+    ] = await Promise.all([
+      Promise.all([
+        prisma.pesajeMaterial.aggregate({
+          where: { pesaje: { horaEntrada: { gte: inicio,    lt: fin    }, estado: 'OK' } },
+          _sum: { pesoNeto: true, rechazo: true },
+        }),
+        prisma.reciclador.count({
+          where: { estado: 'Activa', pesajes: { some: { horaEntrada: { gte: inicio,    lt: fin    }, estado: 'OK' } } },
+        }),
+        prisma.pesajeMaterial.findMany({
+          where: { pesaje: { horaEntrada: { gte: inicio,    lt: fin    }, estado: 'OK' } },
+          include: includeDetalle,
+        }),
+      ]),
+      Promise.all([
+        prisma.pesajeMaterial.aggregate({
+          where: { pesaje: { horaEntrada: { gte: inicioAnt, lt: finAnt }, estado: 'OK' } },
+          _sum: { pesoNeto: true, rechazo: true },
+        }),
+        prisma.reciclador.count({
+          where: { estado: 'Activa', pesajes: { some: { horaEntrada: { gte: inicioAnt, lt: finAnt }, estado: 'OK' } } },
+        }),
+        prisma.pesajeMaterial.findMany({
+          where: { pesaje: { horaEntrada: { gte: inicioAnt, lt: finAnt }, estado: 'OK' } },
+          include: includeDetalle,
+        }),
+      ]),
+    ]);
 
-  const raw = await prisma.pesajeMaterial.findMany({
-    where: { pesaje: { horaEntrada: { gte: inicio, lt: fin }, estado: 'OK' } },
-    select: { pesoNeto: true, material: { select: { nombre: true, icono: true } } },
-  });
+    // ── Valores mes actual ──────────────────────────────────────────────────
+    const rechazos    = Number(pesajesMes._sum.rechazo  ?? 0);
+    const aprovechado = Number(pesajesMes._sum.pesoNeto ?? 0) - rechazos;
+    const liquidado   = pesajesMesDetalle.reduce((acc, pm) => {
+      const precio            = Number(pm.material.precios[0]?.precio ?? 0);
+      const kgComercializable = Number(pm.pesoNeto ?? 0) - Number(pm.rechazo ?? 0);
+      return acc + (kgComercializable > 0 ? kgComercializable * precio : 0);
+    }, 0);
 
-  const map = new Map();
-  for (const pm of raw) {
-    const key = pm.material.nombre;
-    if (!map.has(key)) map.set(key, { nombre: pm.material.nombre, icono: pm.material.icono, kg: 0 });
-    map.get(key).kg += Number(pm.pesoNeto ?? 0);
+    // ── Valores mes anterior ────────────────────────────────────────────────
+    const rechazosAnt    = Number(pesajesMesAnt._sum.rechazo  ?? 0);
+    const aprovechadoAnt = Number(pesajesMesAnt._sum.pesoNeto ?? 0) - rechazosAnt;
+    const liquidadoAnt   = pesajesMesDetalleAnt.reduce((acc, pm) => {
+      const precio            = Number(pm.material.precios[0]?.precio ?? 0);
+      const kgComercializable = Number(pm.pesoNeto ?? 0) - Number(pm.rechazo ?? 0);
+      return acc + (kgComercializable > 0 ? kgComercializable * precio : 0);
+    }, 0);
+
+    // ── Helper delta ────────────────────────────────────────────────────────
+    const calcDelta = (actual, anterior) => {
+      if (anterior === 0) return { delta: 'Nuevo', dir: 'up' };
+      const pct     = ((actual - anterior) / anterior) * 100;
+      const rounded = Math.round(pct);
+      const dir     = rounded >= 0 ? 'up' : 'down';
+      const sign    = rounded >= 0 ? '+' : '';
+      return { delta: `${sign}${rounded}%`, dir };
+    };
+
+    res.json({
+      aprovechado:         { valor: aprovechado,           unidad: 'kg',  ...calcDelta(aprovechado,        aprovechadoAnt)  },
+      recicladoresActivos: { valor: recicladoresActivos,                  ...calcDelta(recicladoresActivos, recicladoresAnt) },
+      rechazos:            { valor: rechazos,              unidad: 'kg',  ...calcDelta(rechazos,            rechazosAnt)     },
+      liquidado:           { valor: Math.round(liquidado), unidad: 'COP', ...calcDelta(liquidado,           liquidadoAnt)    },
+    });
+  } catch (err) {
+    console.error('[dashboard.kpis]', err);
+    res.status(500).json({ error: 'Error al obtener KPIs' });
   }
 
   const total = Array.from(map.values()).reduce((acc, m) => acc + m.kg, 0);
@@ -127,9 +136,42 @@ async function kpis(_req, res) {
   catch (err) { console.error('[dashboard.kpis]', err); res.status(500).json({ error: 'Error al obtener KPIs' }) }
 }
 
-async function actividadReciente(_req, res) {
-  try { res.json(await computeActividad()) }
-  catch (err) { console.error('[dashboard.actividadReciente]', err); res.status(500).json({ error: 'Error al obtener actividad reciente' }) }
+    // Una sola query con JOIN en lugar de dos queries separadas
+    const composicion_raw = await prisma.pesajeMaterial.findMany({
+      where: { pesaje: { horaEntrada: { gte: inicio, lt: fin }, estado: 'OK' } },
+      select: {
+        pesoNeto: true,
+        material: { select: { nombre: true, icono: true } },
+      },
+    });
+
+    // Agrupar en JS
+    const por_material_map = new Map();
+    composicion_raw.forEach((pm) => {
+      const key = pm.material.nombre;
+      if (!por_material_map.has(key)) {
+        por_material_map.set(key, { nombre: pm.material.nombre, icono: pm.material.icono, kg: 0 });
+      }
+      const entry = por_material_map.get(key);
+      entry.kg += Number(pm.pesoNeto ?? 0);
+    });
+
+    const total = Array.from(por_material_map.values()).reduce((acc, m) => acc + m.kg, 0);
+
+    const composicion = Array.from(por_material_map.values())
+      .sort((a, b) => b.kg - a.kg)
+      .map((m) => ({
+        nombre:      m.nombre,
+        icono:       m.icono ?? '♻️',
+        kg:          m.kg,
+        porcentaje:  total > 0 ? +((m.kg / total) * 100).toFixed(1) : 0,
+      }));
+
+    res.json({ total, composicion });
+  } catch (err) {
+    console.error('[dashboard.composicionMaterial]', err);
+    res.status(500).json({ error: 'Error al obtener composición de materiales' });
+  }
 }
 
 async function composicionMaterial(_req, res) {
